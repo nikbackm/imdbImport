@@ -196,7 +196,7 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
         ) WITHOUT ROWID;
 
         CREATE TABLE title_principals (
-            tconst TEXT NOT NULL,           -- Matches 'Const' from ratings
+            tconst TEXT NOT NULL,           
             ordering INTEGER NOT NULL,      -- Order of the credit
             nconst TEXT NOT NULL,           -- Matches 'nconst' from name.basics.tsv (person ID)
             category TEXT NOT NULL,         -- E.g., ""actor"", ""actress"", ""director"", ""writer""
@@ -218,7 +218,7 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
         ) WITHOUT ROWID;
 
         CREATE TABLE title_akas (
-            titleId TEXT NOT NULL,       -- Matches 'titleId' from title.akas.tsv (your Const)
+            tconst TEXT NOT NULL,        
             ordering INTEGER NOT NULL,   -- Order of the AKA (from title.akas.tsv)
             title TEXT NOT NULL,         -- The alternate title itself
             region TEXT,                 -- Region where this AKA is used (e.g., ""US"", ""GB"")
@@ -226,7 +226,7 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
             types TEXT,                  -- Type of AKA (e.g., ""alternative"", ""dvd"", ""working"")
             attributes TEXT,             -- Additional attributes (e.g., ""original title"")
             isOriginalTitle INTEGER,     -- '0' or '1' from title.akas.tsv (BOOLEAN in spirit)
-            PRIMARY KEY (titleId, ordering)
+            PRIMARY KEY (tconst, ordering)
         ) WITHOUT ROWID;";
 
     private void AddToDatabase()
@@ -262,9 +262,9 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
 
         using var insertTitleAkas = connection.CreateCommand();
         insertTitleAkas.CommandText = @"
-            INSERT INTO title_akas (titleId, ordering, title, region, language, types, attributes, isOriginalTitle)
-            VALUES (@titleId, @ordering, @title, @region, @language, @types, @attributes, @isOriginalTitle)";
-        insertTitleAkas.Parameters.Add("@titleId", SqliteType.Text);
+            INSERT INTO title_akas (tconst, ordering, title, region, language, types, attributes, isOriginalTitle)
+            VALUES (@tconst, @ordering, @title, @region, @language, @types, @attributes, @isOriginalTitle)";
+        insertTitleAkas.Parameters.Add("@tconst", SqliteType.Text);
         insertTitleAkas.Parameters.Add("@ordering", SqliteType.Integer);
         insertTitleAkas.Parameters.Add("@title", SqliteType.Text);
         insertTitleAkas.Parameters.Add("@region", SqliteType.Text);
@@ -325,7 +325,7 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
 
             foreach (var parts in _titleAkas)
             {
-                insertTitleAkas.Parameters["@titleId"].Value = parts[0];
+                insertTitleAkas.Parameters["@tconst"].Value = parts[0];
                 insertTitleAkas.Parameters["@ordering"].Value = ParseInt(parts[1]);
                 insertTitleAkas.Parameters["@title"].Value = parts[2];
                 insertTitleAkas.Parameters["@region"].Value = TranslateNulls(parts[3]);
