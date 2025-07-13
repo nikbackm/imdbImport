@@ -43,6 +43,7 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
     private readonly XconstSet _ratedTconsts = new();
     private readonly XconstSet _relevantNconsts = new();
 
+    private readonly List<string[]> _titleBasics = [];
     private readonly List<string[]> _titleAkas = [];
     private readonly List<string[]> _titlePrincipals = [];
     private readonly List<string[]> _nameBasics = [];
@@ -58,9 +59,13 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
 
             LoadRatedTconsts();
 
-            var principalsAndNameBasicsTask = Task.Run(() => { ProcessTitlePrincipalsAndBuildNconsts(); ProcessNameBasics(); });
-            var akasTask = Task.Run(() => ProcessTitleAkas());
-            Task.WaitAll(principalsAndNameBasicsTask, akasTask);
+            var tasks = new List<Task>
+            {
+                Task.Run(() => { ProcessTitlePrincipalsAndBuildNconsts(); ProcessNameBasics(); }),
+                Task.Run(() => ProcessTitleBasics()),
+                Task.Run(() => ProcessTitleAkas())
+            };
+            Task.WaitAll(tasks);
 
             AddToDatabase();
 
@@ -99,6 +104,23 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
         {
             Console.WriteLine("Warning: No rated tconsts found. No IMDb data will be imported.");
         }
+    }
+
+    private void ProcessTitleBasics()
+    {
+        string filePath = Path.Combine(_imdbDataDirPath, "title.basics.tsv.gz");
+        Console.WriteLine($"\nProcessing {Path.GetFileName(filePath)}...");
+        Stopwatch sw = Stopwatch.StartNew();
+
+        using var reader = new GzipReader(filePath, _ratedTconsts);
+        string[]? parts;
+        while ((parts = reader.GetNextIncludedRow()) != null)
+        {
+            _titleBasics.Add(parts);
+        }
+
+        sw.Stop();
+        Console.WriteLine($"Finished {Path.GetFileName(filePath)}. Total lines read: {reader.LinesRead}. Total Titles entries retrieved: {reader.EntriesReturned} in {sw.Elapsed.TotalSeconds:F2} seconds.");
     }
 
     private void ProcessTitleAkas()
@@ -158,9 +180,14 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
         Console.WriteLine($"Finished {Path.GetFileName(filePath)}. Total lines read: {reader.LinesRead}. Total Name Basics entries retrieved: {reader.EntriesReturned} in {sw.Elapsed.TotalSeconds:F2} seconds.");
     }
 
+    /*
+     * 
+*/
+   
+
     const string createTablesSql = @"
         CREATE TABLE name_basics (
-            nconst TEXT PRIMARY KEY NOT NULL, -- Matches 'nconst' from name.basics.tsv (person ID)
+            nconst TEXT PRIMARY KEY NOT NULL, 
             primaryName TEXT NOT NULL,        -- The person's main name
             birthYear INTEGER,
             deathYear INTEGER,
@@ -169,13 +196,25 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
         ) WITHOUT ROWID;
 
         CREATE TABLE title_principals (
-            tconst TEXT NOT NULL,           -- Matches 'tconst' from title.principals.tsv (your Const)
+            tconst TEXT NOT NULL,           -- Matches 'Const' from ratings
             ordering INTEGER NOT NULL,      -- Order of the credit
             nconst TEXT NOT NULL,           -- Matches 'nconst' from name.basics.tsv (person ID)
             category TEXT NOT NULL,         -- E.g., ""actor"", ""actress"", ""director"", ""writer""
             job TEXT,                       -- Specific job within category (e.g., ""cinematographer"")
             characters TEXT,                -- Character names played by the actor (JSON array for multiple)
-	        PRIMARY KEY (tconst, ordering)
+            PRIMARY KEY (tconst, ordering)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE title_basics (
+            tconst TEXT PRIMARY KEY NOT NULL, 
+            titleType TEXT,                -- the type/format of the title (e.g. movie, short, tvseries, tvepisode, video, etc)
+            primaryTitle TEXT,             -- the more popular title / the title used by the filmmakers on promotional materials at the point of release
+            originalTitle TEXT,            -- original title, in the original language
+            isAdult INTEGER,               -- 0: non-adult title; 1: adult title
+            startYear INTEGER,             -- represents the release year of a title. In the case of TV Series, it is the series start year
+            endYear INTEGER,               -- TV Series end year. '\N' for all other title types
+            runtimeMinutes INTEGER,        -- primary runtime of the title, in minutes
+            genres TEXT                    -- includes up to three genres associated with the title
         ) WITHOUT ROWID;
 
         CREATE TABLE title_akas (
@@ -187,7 +226,7 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
             types TEXT,                  -- Type of AKA (e.g., ""alternative"", ""dvd"", ""working"")
             attributes TEXT,             -- Additional attributes (e.g., ""original title"")
             isOriginalTitle INTEGER,     -- '0' or '1' from title.akas.tsv (BOOLEAN in spirit)
-	        PRIMARY KEY (titleId, ordering)
+            PRIMARY KEY (titleId, ordering)
         ) WITHOUT ROWID;";
 
     private void AddToDatabase()
@@ -206,6 +245,20 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
 
         using var createTables = connection.CreateCommand();
         createTables.CommandText = createTablesSql;
+
+        using var insertTitleBasics = connection.CreateCommand();
+        insertTitleBasics.CommandText = @"
+            INSERT INTO title_basics (tconst, titleType, primaryTitle, originalTitle, isAdult, startYear, endYear, runtimeMinutes, genres)
+            VALUES (@tconst, @titleType, @primaryTitle, @originalTitle, @isAdult, @startYear, @endYear, @runtimeMinutes, @genres)";
+        insertTitleBasics.Parameters.Add("@tconst", SqliteType.Text);
+        insertTitleBasics.Parameters.Add("@titleType", SqliteType.Text);
+        insertTitleBasics.Parameters.Add("@primaryTitle", SqliteType.Text);
+        insertTitleBasics.Parameters.Add("@originalTitle", SqliteType.Text);
+        insertTitleBasics.Parameters.Add("@isAdult", SqliteType.Integer);
+        insertTitleBasics.Parameters.Add("@startYear", SqliteType.Integer);
+        insertTitleBasics.Parameters.Add("@endYear", SqliteType.Integer);
+        insertTitleBasics.Parameters.Add("@runtimeMinutes", SqliteType.Integer);
+        insertTitleBasics.Parameters.Add("@genres", SqliteType.Text);
 
         using var insertTitleAkas = connection.CreateCommand();
         insertTitleAkas.CommandText = @"
@@ -244,19 +297,36 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
 
         static object TranslateNulls(string s) => s == "\\N" ? DBNull.Value : s;
 
+        static object ParseInt(string s) => s == "\\N" ? DBNull.Value : int.Parse(s);
+
         using (var transaction = connection.BeginTransaction())
         {
             createTables.Transaction = transaction;
+            insertTitleBasics.Transaction = transaction;
             insertTitleAkas.Transaction = transaction;
             insertTitlePrincipals.Transaction = transaction;
             insertNameBasics.Transaction = transaction;
 
             createTables.ExecuteNonQuery();
 
+            foreach (var parts in _titleBasics)
+            {
+                insertTitleBasics.Parameters["@tconst"].Value = parts[0];
+                insertTitleBasics.Parameters["@titleType"].Value = parts[1];
+                insertTitleBasics.Parameters["@primaryTitle"].Value = parts[2];
+                insertTitleBasics.Parameters["@originalTitle"].Value = parts[3];
+                insertTitleBasics.Parameters["@isAdult"].Value = parts[4] == "1" ? 1 : 0; // Convert "0" or "1" to integer 0 or 1
+                insertTitleBasics.Parameters["@startYear"].Value = ParseInt(parts[5]);
+                insertTitleBasics.Parameters["@endYear"].Value = ParseInt(parts[6]);
+                insertTitleBasics.Parameters["@runtimeMinutes"].Value = ParseInt(parts[7]);
+                insertTitleBasics.Parameters["@genres"].Value = TranslateNulls(parts[8]); // Assuming genres are already comma-separated or will be handled by TranslateNulls
+                insertTitleBasics.ExecuteNonQuery();
+            }
+
             foreach (var parts in _titleAkas)
             {
                 insertTitleAkas.Parameters["@titleId"].Value = parts[0];
-                insertTitleAkas.Parameters["@ordering"].Value = int.TryParse(parts[1], out int orderingVal) ? orderingVal : DBNull.Value;
+                insertTitleAkas.Parameters["@ordering"].Value = ParseInt(parts[1]);
                 insertTitleAkas.Parameters["@title"].Value = parts[2];
                 insertTitleAkas.Parameters["@region"].Value = TranslateNulls(parts[3]);
                 insertTitleAkas.Parameters["@language"].Value = TranslateNulls(parts[4]);
@@ -269,7 +339,7 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
             foreach (var parts in _titlePrincipals)
             {
                 insertTitlePrincipals.Parameters["@tconst"].Value = parts[0];
-                insertTitlePrincipals.Parameters["@ordering"].Value = int.TryParse(parts[1], out int orderingVal) ? orderingVal : DBNull.Value;
+                insertTitlePrincipals.Parameters["@ordering"].Value = ParseInt(parts[1]);
                 insertTitlePrincipals.Parameters["@nconst"].Value = parts[2];
                 insertTitlePrincipals.Parameters["@category"].Value = TranslateNulls(parts[3]);
                 insertTitlePrincipals.Parameters["@job"].Value = TranslateNulls(parts[4]);
@@ -281,8 +351,8 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
             {
                 insertNameBasics.Parameters["@nconst"].Value = parts[0];
                 insertNameBasics.Parameters["@primaryName"].Value = parts[1];
-                insertNameBasics.Parameters["@birthYear"].Value = int.TryParse(parts[2], out int birthYearVal) ? birthYearVal : DBNull.Value;
-                insertNameBasics.Parameters["@deathYear"].Value = int.TryParse(parts[3], out int deathYearVal) ? deathYearVal : DBNull.Value;
+                insertNameBasics.Parameters["@birthYear"].Value = ParseInt(parts[2]);
+                insertNameBasics.Parameters["@deathYear"].Value = ParseInt(parts[3]);
                 insertNameBasics.Parameters["@primaryProfession"].Value = TranslateNulls(parts[4]);
                 insertNameBasics.Parameters["@knownForTitles"].Value = TranslateNulls(parts[5]);
                 insertNameBasics.ExecuteNonQuery();
