@@ -90,7 +90,7 @@ public class ImdbGzipDataImporter(string ratingsDbPath, string imdbDataDirPath)
         {
             connection.Open();
             using var command = connection.CreateCommand();
-            command.CommandText = "SELECT DISTINCT const FROM ratings;";
+            command.CommandText = "SELECT DISTINCT tconst FROM ratings;";
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
